@@ -20,7 +20,8 @@ from __future__ import division
 from __future__ import print_function
 
 import time
-import tensorflow as tf
+#import tensorflow as tf
+import tensorflow.compat.v1 as tf
 
 import random
 from gcn.utils import *
@@ -84,6 +85,7 @@ def run_training(adj, features, labels, idx_train, idx_val, idx_test,
     else:
         raise ValueError('Invalid argument for GCN model ')
     
+    tf.disable_eager_execution()
     # Define placeholders
     placeholders = {
         'support': [tf.sparse_placeholder(tf.float32) for _ in range(num_supports)],
