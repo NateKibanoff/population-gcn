@@ -27,7 +27,7 @@ import sklearn.metrics
 import scipy.io as sio
 
 import ABIDEParser as Reader
-import train_GCN as Train
+import train_GCN_ensemble as Train
 
 
 # Prepares the training/test data for each cross validation fold and trains the GCN
@@ -83,7 +83,7 @@ def train_fold(train_ind, test_ind, val_ind, graph_feat, features, y, y_data, pa
     print("Linear Accuracy: " + str(lin_acc))
 
     # Classification with GCNs
-    test_acc, test_auc = Train.run_training(final_graph, sparse.coo_matrix(x_data).tolil(), y_data, train_ind, val_ind,
+    test_acc, test_auc, test_probs = Train.run_training(final_graph, sparse.coo_matrix(x_data).tolil(), y_data, train_ind, val_ind,
                                             test_ind, params)
 
     print(test_acc)
@@ -92,7 +92,7 @@ def train_fold(train_ind, test_ind, val_ind, graph_feat, features, y, y_data, pa
     test_acc = int(round(test_acc * len(test_ind)))
     lin_acc = int(round(lin_acc * len(test_ind)))
 
-    return test_acc, test_auc, lin_acc, lin_auc, fold_size
+    return test_acc, test_auc, lin_acc, lin_auc, fold_size, test_probs
 
 
 def main():
@@ -118,14 +118,16 @@ def main():
                                                              'uses chebyshev polynomials, '
                                                              'options: gcn, gcn_cheby, dense )')
     parser.add_argument('--seed', default=123, type=int, help='Seed for random initialisation (default: 123)')
-    parser.add_argument('--folds', default=11, type=int, help='For cross validation, specifies which fold will be '
+    parser.add_argument('--folds', default=0, type=int, help='For cross validation, specifies which fold will be '
                                                              'used. All folds are used if set to 11 (default: 11)')
-    parser.add_argument('--save', default=1, type=int, help='Parameter that specifies if results have to be saved. '
+    parser.add_argument('--save', default=0, type=int, help='Parameter that specifies if results have to be saved. '
                                                             'Results will be saved if set to 1 (default: 1)')
     parser.add_argument('--connectivity', default='correlation', help='Type of connectivity used for network '
                                                                       'construction (default: correlation, '
                                                                       'options: correlation, partial correlation, '
                                                                       'tangent)')
+    parser.add_argument('--ensemble_size', default=20, type=int)
+    parser.add_argument('--edge_dropout', default=0.3, type=float)
 
     args = parser.parse_args()
     start_time = time.time()
@@ -174,54 +176,69 @@ def main():
     # Compute feature vectors (vectorised connectivity networks)
     features = Reader.get_networks(subject_IDs, kind=connectivity, atlas_name=atlas)
 
-    # Compute population graph using gender and acquisition site
-    graph = Reader.create_affinity_graph_from_scores(['SEX', 'SITE_ID'], subject_IDs)
-
     # Folds for cross validation experiments
     skf = StratifiedKFold(n_splits=10)
+    cv_splits = list(skf.split(features, np.squeeze(y)))
 
-    if args.folds == 11:  # run cross validation on all folds
-        scores = Parallel(n_jobs=10)(delayed(train_fold)(train_ind, test_ind, test_ind, graph, features, y, y_data,
-                                                         params, subject_IDs)
-                                     for train_ind, test_ind in
-                                     reversed(list(skf.split(np.zeros(num_nodes), np.squeeze(y)))))
+    overall_probs = None
 
-        print(scores)
+    for i in range(args.ensemble_size):
+        # Compute population graph using gender and acquisition site
+        graph = Reader.create_affinity_graph_from_scores(['SEX', 'SITE_ID'], subject_IDs, args.edge_dropout)
 
-        scores_acc = [x[0] for x in scores]
-        scores_auc = [x[1] for x in scores]
-        scores_lin = [x[2] for x in scores]
-        scores_auc_lin = [x[3] for x in scores]
-        fold_size = [x[4] for x in scores]
+        if args.folds == 11:  # run cross validation on all folds
+            scores = Parallel(n_jobs=10)(delayed(train_fold)(train_ind, test_ind, test_ind, graph, features, y, y_data,
+                                                             params, subject_IDs)
+                                         for train_ind, test_ind in
+                                         reversed(list(skf.split(np.zeros(num_nodes), np.squeeze(y)))))
 
-        print('overall linear accuracy %f' + str(np.sum(scores_lin) * 1. / num_nodes))
-        print('overall linear AUC %f' + str(np.mean(scores_auc_lin)))
-        print('overall accuracy %f' + str(np.sum(scores_acc) * 1. / num_nodes))
-        print('overall AUC %f' + str(np.mean(scores_auc)))
+            print(scores)
 
-    else:  # compute results for only one fold
+            scores_acc = [x[0] for x in scores]
+            scores_auc = [x[1] for x in scores]
+            scores_lin = [x[2] for x in scores]
+            scores_auc_lin = [x[3] for x in scores]
+            fold_size = [x[4] for x in scores]
 
-        cv_splits = list(skf.split(features, np.squeeze(y)))
+            print('overall linear accuracy %f' + str(np.sum(scores_lin) * 1. / num_nodes))
+            print('overall linear AUC %f' + str(np.mean(scores_auc_lin)))
+            print('overall accuracy %f' + str(np.sum(scores_acc) * 1. / num_nodes))
+            print('overall AUC %f' + str(np.mean(scores_auc)))
 
-        train = cv_splits[args.folds][0]
-        test = cv_splits[args.folds][1]
+        else:  # compute results for only one fold
+            train = cv_splits[args.folds][0]
+            test = cv_splits[args.folds][1]
 
-        val = test
+            val = test
 
-        scores_acc, scores_auc, scores_lin, scores_auc_lin, fold_size = train_fold(train, test, val, graph, features, y,
-                                                         y_data, params, subject_IDs)
+            scores_acc, scores_auc, scores_lin, scores_auc_lin, fold_size, test_probs = train_fold(train, test, val, graph, features, y,
+                                                             y_data, params, subject_IDs)
 
-        print('overall linear accuracy %f' + str(np.sum(scores_lin) * 1. / fold_size))
-        print('overall linear AUC %f' + str(np.mean(scores_auc_lin)))
-        print('overall accuracy %f' + str(np.sum(scores_acc) * 1. / fold_size))
-        print('overall AUC %f' + str(np.mean(scores_auc)))
+            print('overall linear accuracy %f' + str(np.sum(scores_lin) * 1. / fold_size))
+            print('overall linear AUC %f' + str(np.mean(scores_auc_lin)))
+            print('overall accuracy %f' + str(np.sum(scores_acc) * 1. / fold_size))
+            print('overall AUC %f' + str(np.mean(scores_auc)))
+            
+        if overall_probs is None: overall_probs = test_probs
+        else: overall_probs += test_probs
 
-    if args.save == 1:
-        result_name = 'ABIDE_classification.mat'
-        #sio.savemat('/vol/medic02/users/sparisot/python/graphCNN/results/' + result_name + '.mat',
-        sio.savemat(result_name,
-                    {'lin': scores_lin, 'lin_auc': scores_auc_lin,
-                     'acc': scores_acc, 'auc': scores_auc, 'folds': fold_size})
+        if args.save == 1:
+            result_name = 'ABIDE_classification.mat'
+            #sio.savemat('/vol/medic02/users/sparisot/python/graphCNN/results/' + result_name + '.mat',
+            sio.savemat(result_name,
+                        {'lin': scores_lin, 'lin_auc': scores_auc_lin,
+                         'acc': scores_acc, 'auc': scores_auc, 'folds': fold_size})
+                         
+    overall_probs/=args.ensemble_size
+    overall_probs = overall_probs[cv_splits[args.folds][1]]
+    overall_score = 0
+    #compare overall_probs (predicted) with y_data (actual)
+    y_actual = y_data[cv_splits[args.folds][1]]
+    print(overall_probs.shape,y_actual.shape)
+    for i in range(len(y_actual)):
+        if overall_probs[i,0] > overall_probs[i,1] and y_actual[i,0]==1: overall_score += 1
+        elif overall_probs[i,1] > overall_probs[i,0] and y_actual[i,1]==1: overall_score += 1
+    print("Overall accuracy (after bootstrap):", overall_score/len(y_actual))
 
 if __name__ == "__main__":
     main()

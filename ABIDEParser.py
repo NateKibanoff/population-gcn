@@ -229,7 +229,7 @@ def get_networks(subject_list, kind, atlas_name="aal", variable='connectivity'):
 
 
 # Construct the adjacency matrix of the population from phenotypic scores
-def create_affinity_graph_from_scores(scores, subject_list):
+def create_affinity_graph_from_scores(scores, subject_list, edge_dropout):
     """
         scores       : list of phenotypic information to be used to construct the affinity graph
         subject_list : list of subject IDs
@@ -250,7 +250,7 @@ def create_affinity_graph_from_scores(scores, subject_list):
                 for j in range(k + 1, num_nodes):
                     try:
                         val = abs(float(label_dict[subject_list[k]]) - float(label_dict[subject_list[j]]))
-                        if val < 2:
+                        if val < 2 and np.random.rand()<edge_dropout:
                             graph[k, j] += 1
                             graph[j, k] += 1
                     except ValueError:  # missing label
@@ -259,7 +259,7 @@ def create_affinity_graph_from_scores(scores, subject_list):
         else:
             for k in range(num_nodes):
                 for j in range(k + 1, num_nodes):
-                    if label_dict[subject_list[k]] == label_dict[subject_list[j]]:
+                    if label_dict[subject_list[k]] == label_dict[subject_list[j]] and np.random.rand()<edge_dropout:
                         graph[k, j] += 1
                         graph[j, k] += 1
 
